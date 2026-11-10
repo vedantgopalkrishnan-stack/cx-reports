@@ -38,8 +38,8 @@ const REPORT_SLUG: Record<ReportType, string> = {
   taxation: "taxation-report",
 };
 
-export function reportFilename(reportType: ReportType, userId: string): string {
-  return `${REPORT_SLUG[reportType]}-${userId}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+export function reportFilename(reportType: ReportType, userId: string, format: "xlsx" | "pdf" = "xlsx"): string {
+  return `${REPORT_SLUG[reportType]}-${userId}-${new Date().toISOString().slice(0, 10)}.${format}`;
 }
 
 // Route the file through our own origin. A cross-origin link ignores the
@@ -49,10 +49,27 @@ export function downloadHref(url: string, filename: string): string {
   return `/api/download?${new URLSearchParams({ url, filename }).toString()}`;
 }
 
+export function pdfDownloadHref(url: string, filename: string): string {
+  const pdfName = filename.replace(/\.xlsx$/i, ".pdf");
+  return `/api/convert-pdf?${new URLSearchParams({ url, filename: pdfName }).toString()}`;
+}
+
 export function triggerDownload(url: string, filename: string): void {
   const anchor = document.createElement("a");
   anchor.href = downloadHref(url, filename);
   anchor.download = filename;
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+export function triggerPdfDownload(url: string, filename: string): void {
+  const pdfName = filename.replace(/\.xlsx$/i, ".pdf");
+  const anchor = document.createElement("a");
+  anchor.href = pdfDownloadHref(url, pdfName);
+  anchor.download = pdfName;
   anchor.rel = "noopener";
   anchor.style.display = "none";
   document.body.appendChild(anchor);

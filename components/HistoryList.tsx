@@ -1,4 +1,4 @@
-import { downloadHref, reportFilename } from "@/lib/api";
+import { downloadHref, pdfDownloadHref, reportFilename } from "@/lib/api";
 import { HistoryEntry } from "@/lib/history";
 
 const STATUS_LABEL: Record<HistoryEntry["status"], string> = {
@@ -41,34 +41,49 @@ export default function HistoryList({ entries, onToast }: Props) {
         <p className="text-sm text-ink/40">No requests yet in this browser.</p>
       ) : (
         <div className="flex flex-col gap-3">
-          {entries.map((entry) => (
-            <div key={entry.id} className="card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-semibold text-ink">
-                  {REPORT_LABEL[entry.reportType]} · User {entry.userId}
-                </p>
-                <p className="text-xs text-ink/50">{formatTime(entry.timestamp)}</p>
+          {entries.map((entry) => {
+            const baseFilename = entry.filename ?? reportFilename(entry.reportType, entry.userId);
+            const pdfFilename = baseFilename.replace(/\.xlsx$/i, ".pdf");
+
+            return (
+              <div key={entry.id} className="card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-ink">
+                    {REPORT_LABEL[entry.reportType]} · User {entry.userId}
+                  </p>
+                  <p className="text-xs text-ink/50">{formatTime(entry.timestamp)}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={`rounded-full px-3 py-1 text-xs font-bold ${STATUS_CLASS[entry.status]}`}>
+                    {STATUS_LABEL[entry.status]}
+                  </span>
+                  {entry.status === "success" && entry.downloadUrl && (
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={downloadHref(entry.downloadUrl, baseFilename)}
+                        download={baseFilename}
+                        onClick={() => onToast("Excel download started")}
+                        className="text-xs font-semibold text-accent-dark hover:underline"
+                        title="Download as Excel"
+                      >
+                        Excel
+                      </a>
+                      <span className="text-xs text-ink/30">·</span>
+                      <a
+                        href={pdfDownloadHref(entry.downloadUrl, baseFilename)}
+                        download={pdfFilename}
+                        onClick={() => onToast("Converting to PDF…")}
+                        className="text-xs font-semibold text-ink/80 hover:text-ink hover:underline"
+                        title="Download converted PDF"
+                      >
+                        PDF
+                      </a>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <span className={`rounded-full px-3 py-1 text-xs font-bold ${STATUS_CLASS[entry.status]}`}>
-                  {STATUS_LABEL[entry.status]}
-                </span>
-                {entry.status === "success" && entry.downloadUrl && (
-                  <a
-                    href={downloadHref(
-                      entry.downloadUrl,
-                      entry.filename ?? reportFilename(entry.reportType, entry.userId)
-                    )}
-                    download={entry.filename ?? reportFilename(entry.reportType, entry.userId)}
-                    onClick={() => onToast("Download started")}
-                    className="text-xs font-semibold text-accent-dark hover:underline"
-                  >
-                    Re-download
-                  </a>
-                )}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
