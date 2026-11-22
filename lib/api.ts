@@ -38,7 +38,11 @@ const REPORT_SLUG: Record<ReportType, string> = {
   taxation: "taxation-report",
 };
 
-export function reportFilename(reportType: ReportType, userId: string, format: "xlsx" | "pdf" = "xlsx"): string {
+export function reportFilename(
+  reportType: ReportType,
+  userId: string,
+  format: "xlsx" | "pdf" | "docx" = "xlsx"
+): string {
   return `${REPORT_SLUG[reportType]}-${userId}-${new Date().toISOString().slice(0, 10)}.${format}`;
 }
 
@@ -52,6 +56,11 @@ export function downloadHref(url: string, filename: string): string {
 export function pdfDownloadHref(url: string, filename: string): string {
   const pdfName = filename.replace(/\.xlsx$/i, ".pdf");
   return `/api/convert-pdf?${new URLSearchParams({ url, filename: pdfName }).toString()}`;
+}
+
+export function docxDownloadHref(url: string, filename: string): string {
+  const docxName = filename.replace(/\.xlsx$/i, ".docx");
+  return `/api/convert-docx?${new URLSearchParams({ url, filename: docxName }).toString()}`;
 }
 
 export function triggerDownload(url: string, filename: string): void {
@@ -70,6 +79,18 @@ export function triggerPdfDownload(url: string, filename: string): void {
   const anchor = document.createElement("a");
   anchor.href = pdfDownloadHref(url, pdfName);
   anchor.download = pdfName;
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+export function triggerDocxDownload(url: string, filename: string): void {
+  const docxName = filename.replace(/\.xlsx$/i, ".docx");
+  const anchor = document.createElement("a");
+  anchor.href = docxDownloadHref(url, docxName);
+  anchor.download = docxName;
   anchor.rel = "noopener";
   anchor.style.display = "none";
   document.body.appendChild(anchor);

@@ -1,4 +1,4 @@
-import { downloadHref, pdfDownloadHref, reportFilename } from "@/lib/api";
+import { downloadHref, pdfDownloadHref, docxDownloadHref, reportFilename } from "@/lib/api";
 import { HistoryEntry } from "@/lib/history";
 
 const STATUS_LABEL: Record<HistoryEntry["status"], string> = {
@@ -44,6 +44,7 @@ export default function HistoryList({ entries, onToast }: Props) {
           {entries.map((entry) => {
             const baseFilename = entry.filename ?? reportFilename(entry.reportType, entry.userId);
             const pdfFilename = baseFilename.replace(/\.xlsx$/i, ".pdf");
+            const docxFilename = baseFilename.replace(/\.xlsx$/i, ".docx");
 
             return (
               <div key={entry.id} className="card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -77,6 +78,16 @@ export default function HistoryList({ entries, onToast }: Props) {
                         title="Download converted PDF"
                       >
                         PDF
+                      </a>
+                      <span className="text-xs text-ink/30">·</span>
+                      <a
+                        href={docxDownloadHref(entry.downloadUrl, baseFilename)}
+                        download={docxFilename}
+                        onClick={() => onToast("Converting to Word…")}
+                        className="text-xs font-semibold text-[#2b579a] hover:underline"
+                        title="Download converted Word document"
+                      >
+                        Word
                       </a>
                     </div>
                   )}

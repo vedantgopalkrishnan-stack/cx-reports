@@ -9,6 +9,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "docx": "^9.15.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.9",
     "next": "^15.1.6",

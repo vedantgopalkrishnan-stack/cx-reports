@@ -1,7 +1,7 @@
 # Spec: Wint Master/Taxation Report — Word (.docx) Export Feature
 
 **Branch:** `feature/excel-to-pdf-converter`  
-**Status:** Planning — do not implement until confirmed  
+**Status:** Implemented  
 **Prepared:** 2026-11-12  
 
 ---
@@ -40,6 +40,15 @@ The header is a **borderless 2-column table** that spans the full page width (`2
 **Below the header table:** A full-width thin decorative bar image (`image2.png` → `wint-header-bar.png`, 516×3 px — a green/black gradient stripe) that runs edge-to-edge.
 
 This two-element header appears on **every page** of the document.
+
+### 2b. Footer Anatomy (from Screenshots)
+
+The footer appears on **every page** of the document and consists of:
+1. Top decorative bar image (`wint-header-bar.png`) spanning the full page width.
+2. A 3-column table with subtle vertical dividers:
+   - **Left column (~62%):** `Reg. Address: The Pavilion, #175, Dollars Colony, Near Rainbow Hospital, Bannerghatta Main Road, Bannerghatta Road, Bangalore South, Bangalore - 560076, Karnataka, India.` (Poppins/Helvetica, ~7pt, `#444444`)
+   - **Middle column (~21%):** `Email:` followed by `compliance@wintwealth.com` (Poppins/Helvetica, ~7pt, `#222222`)
+   - **Right column (~17%):** `Contact:` followed by `+91-8861217554` (Poppins/Helvetica, ~7pt, `#222222`)
 
 ---
 

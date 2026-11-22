@@ -24,284 +24,13 @@ export interface WorkbookInfo {
   sheets: SheetPreviewData[];
 }
 
-interface ParsedSheetContent {
-  bannerTitle?: string;
-  sectionTitle?: string;
-  metadata: Array<{ label: string; value: string }>;
-  headers: string[];
-  bodyRows: string[][];
-  disclaimers: string[];
-  columnAlignments: Array<"left" | "center" | "right">;
-}
-
-/**
- * Checks if a string looks like a disclaimer, legal note, or terms block.
- */
-function isDisclaimerOrNote(text: string): boolean {
-  const trimmed = text.trim();
-  const lower = trimmed.toLowerCase();
-  if (lower.startsWith("disclaimer") || lower.startsWith("*acquisition cost") || lower.startsWith("acquisition cost")) {
-    return true;
-  }
-  if (lower.startsWith("note:") || lower.startsWith("notes:") || lower.startsWith("important note")) {
-    return true;
-  }
-  if (
-    lower.includes("the document and details set out thereunder") ||
-    lower.includes("before filing your income tax return") ||
-    lower.includes("we have classified") ||
-    lower.includes("all information provided herein") ||
-    lower.includes("tax laws and interpretations") ||
-    lower.includes("wint wealth disclaims") ||
-    lower.includes("please consult a qualified tax") ||
-    lower.includes("demat linked bank account") ||
-    lower.includes("informational purposes only") ||
-    lower.includes("cannot guarantee 100% accuracy")
-  ) {
-    return true;
-  }
-  // Any single cell with very long text (> 110 characters) is almost certainly a paragraph/note
-  if (trimmed.length > 110 && !trimmed.includes("\t")) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Checks if a string looks like a user/report metadata key (e.g. Name, Phone, Email, Date).
- */
-function isMetadataKey(text: string): boolean {
-  const lower = text.trim().toLowerCase().replace(/:$/, "");
-  const keys = [
-    "name",
-    "phone number",
-    "phone",
-    "email",
-    "user id",
-    "user",
-    "pan",
-    "pan number",
-    "date of report generation",
-    "report generation date",
-    "report date",
-    "date of generation",
-    "generated on",
-    "client id",
-    "demat account",
-  ];
-  return keys.includes(lower);
-}
-
-/**
- * Detects whether a column primarily contains numbers, currency, dates, or text.
- */
-function detectColumnAlignment(header: string, values: string[]): "left" | "center" | "right" {
-  const hLower = header.toLowerCase();
-
-  // Explicit header cues
-  if (
-    hLower.includes("date") ||
-    hLower === "isin" ||
-    hLower.includes("pan") ||
-    hLower === "fy" ||
-    hLower.includes("year") ||
-    hLower.includes("month") ||
-    hLower.includes("frequency") ||
-    hLower.includes("status") ||
-    hLower.includes("type")
-  ) {
-    return "center";
-  }
-
-  if (
-    hLower.includes("amount") ||
-    hLower.includes("units") ||
-    hLower.includes("value") ||
-    hLower.includes("cost") ||
-    hLower.includes("xirr") ||
-    hLower.includes("ytm") ||
-    hLower.includes("tds") ||
-    hLower.includes("interest") ||
-    hLower.includes("principal") ||
-    hLower.includes("repaid") ||
-    hLower.includes("sold") ||
-    hLower.includes("total") ||
-    hLower.includes("rate") ||
-    hLower.includes("price")
-  ) {
-    return "right";
-  }
-
-  // Value inspection
-  let numericCount = 0;
-  let dateCount = 0;
-  let nonEmptyCount = 0;
-
-  for (const v of values) {
-    const val = v.trim();
-    if (!val || val === "-") continue;
-    nonEmptyCount++;
-
-    // Date check (e.g. 17/10/2025, 2025-04-15, 13-04-2027)
-    if (/^\d{1,4}[-/.]\d{1,2}[-/.]\d{2,4}$/.test(val) || /^\d{4}-\d{4}$/.test(val)) {
-      dateCount++;
-      continue;
-    }
-
-    // Number / Currency / Percent check
-    const cleanNum = val.replace(/^[₹$€£]\s?/, "").replace(/%$/, "").replace(/,/g, "").trim();
-    if (!isNaN(Number(cleanNum))) {
-      numericCount++;
-    }
-  }
-
-  if (nonEmptyCount > 0) {
-    if (numericCount / nonEmptyCount > 0.6) return "right";
-    if (dateCount / nonEmptyCount > 0.6) return "center";
-  }
-
-  return "left";
-}
-
-/**
- * Intelligently separates an Excel worksheet into structured sections:
- * - Banner titles (e.g. "CONSOLIDATED INVESTMENT REPORT WINT WEALTH")
- * - User info / metadata (e.g. Name: Vedant, Phone: 8637663482, Date: 10/11/2026)
- * - Section titles (e.g. "INVESTMENT SUMMARY FY 25-26")
- * - The actual data table (headers + body rows)
- * - Disclaimers & notes (separated from the table to prevent column squishing & page bloat)
- */
-function parseSheetSections(rawData: unknown[][]): ParsedSheetContent | null {
-  const cleanRows = rawData
-    .map((row) =>
-      (Array.isArray(row) ? row : []).map((cell) =>
-        cell !== null && cell !== undefined ? String(cell).trim() : ""
-      )
-    )
-    .filter((row) => row.some((val) => val !== ""));
-
-  if (cleanRows.length === 0) return null;
-
-  const metadata: Array<{ label: string; value: string }> = [];
-  const disclaimers: string[] = [];
-  let bannerTitle: string | undefined = undefined;
-  let sectionTitle: string | undefined = undefined;
-
-  const candidateTableRows: string[][] = [];
-
-  for (let i = 0; i < cleanRows.length; i++) {
-    const row = cleanRows[i];
-    const nonBlank = row.filter((c) => c !== "");
-    const firstCell = nonBlank[0] || "";
-    const firstCellLower = firstCell.toLowerCase();
-
-    // 1. Disclaimer / Note detection
-    if (isDisclaimerOrNote(firstCell) || (nonBlank.length <= 2 && row.join(" ").length > 110)) {
-      const fullText = nonBlank.join(" ").trim();
-      if (fullText && !disclaimers.includes(fullText)) {
-        disclaimers.push(fullText);
-      }
-      continue;
-    }
-
-    // 2. Metadata detection (Key-value pairs like Name, Phone, Email, Date of report generation)
-    if (nonBlank.length >= 2 && nonBlank.length <= 4 && isMetadataKey(nonBlank[0])) {
-      const label = nonBlank[0].replace(/:$/, "").trim();
-      const value = nonBlank[1]?.trim() || "";
-      if (label && value && !metadata.some((m) => m.label.toLowerCase() === label.toLowerCase())) {
-        metadata.push({ label, value });
-      }
-      continue;
-    }
-
-    // 3. Document / Banner title (Single prominent cell before table)
-    if (
-      candidateTableRows.length === 0 &&
-      nonBlank.length === 1 &&
-      (firstCellLower.includes("report") || firstCellLower.includes("wint") || firstCellLower.includes("consolidated"))
-    ) {
-      bannerTitle = firstCell;
-      continue;
-    }
-
-    // 4. Section subheadings (e.g. "INVESTMENT SUMMARY (...) FY 25-26", "Bonds Holding Statement")
-    if (
-      nonBlank.length === 1 &&
-      (firstCellLower.includes("summary") || firstCellLower.includes("statement") || firstCellLower.includes("holding")) &&
-      candidateTableRows.length <= 1
-    ) {
-      sectionTitle = firstCell;
-      continue;
-    }
-
-    candidateTableRows.push(row);
-  }
-
-  if (candidateTableRows.length === 0) {
-    return {
-      bannerTitle,
-      sectionTitle,
-      metadata,
-      headers: ["Information"],
-      bodyRows: cleanRows.map((r) => [r.join(" ")]),
-      disclaimers,
-      columnAlignments: ["left"],
-    };
-  }
-
-  // Find table header row: the row with the maximum number of populated cells
-  let headerIdx = 0;
-  let maxCols = 0;
-  const searchLimit = Math.min(candidateTableRows.length, 6);
-  for (let i = 0; i < searchLimit; i++) {
-    const count = candidateTableRows[i].filter((c) => c !== "").length;
-    if (count > maxCols) {
-      maxCols = count;
-      headerIdx = i;
-    }
-  }
-
-  const rawHeaders = candidateTableRows[headerIdx] || [];
-  // Trim empty trailing columns
-  let lastNonEmpty = rawHeaders.length - 1;
-  while (lastNonEmpty >= 0 && rawHeaders[lastNonEmpty] === "") {
-    lastNonEmpty--;
-  }
-  const colCount = Math.max(1, lastNonEmpty + 1);
-
-  const headers = rawHeaders.slice(0, colCount).map((h, i) => h || `Col ${i + 1}`);
-
-  // Extract body rows and ensure equal column widths
-  const rawBodyRows = candidateTableRows.slice(headerIdx + 1);
-  const bodyRows: string[][] = [];
-
-  for (const r of rawBodyRows) {
-    const rowSlice = r.slice(0, colCount);
-    while (rowSlice.length < colCount) {
-      rowSlice.push("");
-    }
-    // Filter out rows that are completely empty or duplicate disclaimers
-    if (rowSlice.some((c) => c !== "") && !isDisclaimerOrNote(rowSlice[0])) {
-      bodyRows.push(rowSlice);
-    }
-  }
-
-  // Calculate column alignments
-  const columnAlignments: Array<"left" | "center" | "right"> = headers.map((h, colIdx) => {
-    const colValues = bodyRows.map((r) => r[colIdx] || "");
-    return detectColumnAlignment(h, colValues);
-  });
-
-  return {
-    bannerTitle,
-    sectionTitle,
-    metadata,
-    headers,
-    bodyRows,
-    disclaimers,
-    columnAlignments,
-  };
-}
+import {
+  parseSheetSections,
+  isDisclaimerOrNote,
+  isMetadataKey,
+  detectColumnAlignment,
+  type ParsedSheetContent,
+} from "./sheet-parser";
 
 /**
  * Parses an Excel file buffer and extracts workbook metadata and preview rows.
@@ -648,56 +377,157 @@ export function convertExcelToPdf(
 export function generateSampleExcelWorkbook(): Uint8Array {
   const wb = XLSX.utils.book_new();
 
-  // Sheet 1: Master Report
+  // Sheet 1: Investment Summary
   const masterData = [
-    ["", "", "", "", "", "CONSOLIDATED INVESTMENT REPORT WINT WEALTH"],
-    ["Name", "Vedant Gopalakrishnan"],
-    ["Phone Number", "8637663482"],
-    ["Email", "vedant.g@wintwealth.com"],
-    ["", "", "", "", "", "INVESTMENT SUMMARY (1/04/2025 - 31/03/2026) FY 25-26"],
+    ["CONSOLIDATED INVESTMENT REPORT WINT WEALTH"],
+    ["Name", "Anil Vesvikar"],
+    ["Phone Number", "9833074106"],
+    ["Email", "anilvdlh@gmail.com"],
+    [],
+    ["INVESTMENT SUMMARY (1/04/2023 - 31/03/2024) FY 23-24"],
     ["Bond Name", "ISIN", "No. Of Units", "Invested Amount", "Face Value", "Acquisition Cost*", "Date of Investment", "Maturity Date", "XIRR", "Frequency of Interest Payment", "Frequency Of Principal Repayment"],
-    ["IIFL Samasta", "INE413U07277", 1, 1065.69, 1000, 65.69, "17/10/2025", "21/12/2026", "11.50%", "Annually", "At Maturity"],
-    ["Capri Global", "INE180C07221", 1, 997.55, 1000, "-", "01/11/2025", "13/04/2027", "9.50%", "Annually", "At Maturity"],
-    ["Total:", "", 2, 2063.24, 2000, 65.69, "", "", "", "", ""],
-    ["Date of report generation:", "10/11/2026"],
-    ["*Acquisition Cost: When you purchase a bond, the price you pay might be a little higher than the face value. This extra amount – cost of acquisition – includes accrued interest, which is the interest for days you were not invested in the bond (since it was issued). It may also include Wint Wealth spread which is the margin that we earn on the transaction. Note: This cost of acquisition should be deducted as an expense when you file your ITR."],
+    ["Navi Finserv", "INE342T07411", 3, "₹2,995.26", "₹3,000.00", "-", "24/11/2023", "18/01/2025", "10.50%", "Monthly", "At Maturity"],
+    ["", "Total:", 3, "₹2,995.26", "₹3,000.00", "-", "", "", "", "", ""],
+    [],
+    ["INVESTMENT SUMMARY (1/04/2026 - 11/11/2026) FY 26-27"],
+    ["Bond Name", "ISIN", "No. Of Units", "Invested Amount", "Face Value", "Acquisition Cost*", "Date of Investment", "Maturity Date", "XIRR", "Frequency of Interest Payment", "Frequency Of Principal Repayment"],
+    ["Muthoot MCred", "INE101Q07BU7", 102, "₹10,00,727.38", "₹10,20,000.00", "-", "13/04/2026", "13/01/2028", "11%", "Monthly", "At Maturity"],
+    ["", "Total:", 102, "₹10,00,727.38", "₹10,20,000.00", "-", "", "", "", "", ""],
+    [],
+    ["Date of report generation:", "11/11/2026"],
+    ["*Acquisition Cost: When you purchase a bond, the price you pay might be a little higher than the face value. This extra amount – cost of acquisition – includes accrued interest, which is the interest for days you were not invested in the bond (since it was issued). It may also include Wint Wealth's spread which is the margin that we earn on the transaction. This does not affect the XIRR mentioned for the bond, as the XIRR is calculated after taking into account this cost. Note: This cost of acquisition should be deducted as an expense when you file your ITR. Read more about it here."],
     ["Disclaimer: The document and details set out thereunder are for informational purposes only being prepared and shared for customer convenience. The data is based on transactions undertaken through Wint Wealth Platform only. There may be certain inaccuracies in the data presented in the document due to (i) transactions or dealings done by the client outside of Wint Wealth; or (ii) any other error in sharing of data by the issuers / trustees to Wint Wealth. You are advised to verify the information in this document basis the above from your demat linked bank account."]
   ];
   const ws1 = XLSX.utils.aoa_to_sheet(masterData);
   XLSX.utils.book_append_sheet(wb, ws1, "Investment Summary");
 
-  // Sheet 2: Repayment Summary
+  // Sheet 2: Repayment & Sell Report
   const repayData = [
-    ["", "", "", "", "", "CONSOLIDATED REPAYMENT REPORT WINT WEALTH"],
-    ["Name", "Vedant Gopalakrishnan"],
-    ["Phone Number", "8637663482"],
-    ["Email", "vedant.g@wintwealth.com"],
-    ["", "", "", "", "", "REPAYMENT SUMMARY (1/04/2026 - 10/11/2026) FY 26-27"],
-    ["Date", "Name Of Bond", "ISIN", "No. Of Units", "Amount in Bank", "Principal Repaid", "Interest Paid (Before TDS)", "Interest Paid (After TDS)", "TDS Deducted"],
-    ["13/10/2026", "Capri Global", "INE180C07221", 1, 80.1, 0, 89, 80.1, 8.9],
-    ["Total:", "", "", 1, 80.1, 0, 89, 80.1, 8.9],
-    ["Date of report generation:", "10/11/2026"],
-    ["Disclaimer: The document and details set out thereunder are for informational purposes only being prepared and shared for customer convenience. The data is based on transactions undertaken through Wint Wealth Platform only. You are advised to verify the information from your demat linked bank account."]
+    ["CONSOLIDATED REPAYMENT REPORT WINT WEALTH"],
+    ["Name", "Anil Vesvikar"],
+    ["Phone Number", "9833074106"],
+    ["Email", "anilvdlh@gmail.com"],
+    [],
+    ["REPAYMENT SUMMARY (1/04/2023 - 31/03/2024) FY 23-24"],
+    ["Date", "Name Of Bond", "ISIN", "No. Of Units", "Amount in Bank", "Principal Repaid", "Interest Paid (Before TDS Deduction)", "Interest Paid (After TDS Deduction)", "TDS Deducted"],
+    ["18/12/2023", "Navi Finserv", "INE342T07411", 3, "₹21.58", "₹0.00", "₹23.98", "₹21.58", "₹2.40"],
+    ["18/01/2024", "Navi Finserv", "INE342T07411", 3, "₹22.28", "₹0.00", "₹24.78", "₹22.28", "₹2.50"],
+    ["16/02/2024", "Navi Finserv", "INE342T07411", 3, "₹22.30", "₹0.00", "₹24.78", "₹22.30", "₹2.48"],
+    ["18/03/2024", "Navi Finserv", "INE342T07411", 3, "₹21.00", "₹0.00", "₹23.32", "₹21.00", "₹2.32"],
+    ["", "", "Total:", 12, "₹87.16", "₹0.00", "₹96.86", "₹87.16", "₹9.70"],
+    [],
+    ["REPAYMENT SUMMARY (1/04/2024 - 31/03/2025) FY 24-25"],
+    ["Date", "Name Of Bond", "ISIN", "No. Of Units", "Amount in Bank", "Principal Repaid", "Interest Paid (Before TDS Deduction)", "Interest Paid (After TDS Deduction)", "TDS Deducted"],
+    ["18/04/2024", "Navi Finserv", "INE342T07411", 3, "₹22.30", "₹0.00", "₹24.78", "₹22.30", "₹2.48"],
+    ["17/05/2024", "Navi Finserv", "INE342T07411", 3, "₹21.57", "₹0.00", "₹23.97", "₹21.57", "₹2.40"],
+    ["18/06/2024", "Navi Finserv", "INE342T07411", 3, "₹22.30", "₹0.00", "₹24.78", "₹22.30", "₹2.48"],
+    ["18/07/2024", "Navi Finserv", "INE342T07411", 3, "₹21.57", "₹0.00", "₹23.97", "₹21.57", "₹2.40"],
+    ["16/08/2024", "Navi Finserv", "INE342T07411", 3, "₹22.36", "₹0.00", "₹24.84", "₹22.36", "₹2.48"],
+    ["17/09/2024", "Navi Finserv", "INE342T07411", 3, "₹22.36", "₹0.00", "₹24.84", "₹22.36", "₹2.48"],
+    ["18/10/2024", "Navi Finserv", "INE342T07411", 3, "₹21.63", "₹0.00", "₹24.03", "₹21.63", "₹2.40"],
+    ["18/11/2024", "Navi Finserv", "INE342T07411", 3, "₹22.36", "₹0.00", "₹24.84", "₹22.36", "₹2.48"],
+    ["18/12/2024", "Navi Finserv", "INE342T07411", 3, "₹21.63", "₹0.00", "₹24.03", "₹21.63", "₹2.40"],
+    ["17/01/2025", "Navi Finserv", "INE342T07411", 3, "₹3,022.36", "₹3,000.00", "₹24.84", "₹22.36", "₹2.48"],
+    ["", "", "Total:", 30, "₹3,220.44", "₹3,000.00", "₹244.92", "₹220.44", "₹24.48"],
+    [],
+    ["REPAYMENT SUMMARY (1/04/2026 - 11/11/2026) FY 26-27"],
+    ["Date", "Name Of Bond", "ISIN", "No. Of Units", "Amount in Bank", "Principal Repaid", "Interest Paid (Before TDS Deduction)", "Interest Paid (After TDS Deduction)", "TDS Deducted"],
+    ["09/05/2026", "Muthoot MCred", "INE101Q07BU7", 102, "₹6,979.55", "₹0.00", "₹7,754.75", "₹6,979.55", "₹775.20"],
+    ["10/06/2026", "Muthoot MCred", "INE101Q07BU7", 102, "₹7,211.81", "₹0.00", "₹8,013.53", "₹7,211.81", "₹801.72"],
+    ["10/07/2026", "Muthoot MCred", "INE101Q07BU7", 102, "₹6,979.55", "₹0.00", "₹7,754.75", "₹6,979.55", "₹775.20"],
+    ["10/08/2026", "Muthoot MCred", "INE101Q07BU7", 102, "₹7,211.81", "₹0.00", "₹8,013.53", "₹7,211.81", "₹801.72"],
+    ["10/09/2026", "Muthoot MCred", "INE101Q07BU7", 102, "₹7,211.81", "₹0.00", "₹8,013.53", "₹7,211.81", "₹801.72"],
+    ["09/10/2026", "Muthoot MCred", "INE101Q07BU7", 102, "₹6,979.55", "₹0.00", "₹7,754.75", "₹6,979.55", "₹775.20"],
+    ["09/11/2026", "Muthoot MCred", "INE101Q07BU7", 102, "₹7,211.81", "₹0.00", "₹8,013.53", "₹7,211.81", "₹801.72"],
+    ["", "", "Total:", 714, "₹49,785.89", "₹0.00", "₹55,318.37", "₹49,785.89", "₹5,532.48"],
+    [],
+    ["Date of report generation:", "11/11/2026"],
+    ["Disclaimer: The document and details set out thereunder are for informational purposes only being prepared and shared for customer convenience. The data is based on transactions undertaken through Wint Wealth Platform only. There may be certain inaccuracies in the data presented in the document due to (i) transactions or dealings done by the client outside of Wint Wealth; or (ii) any other error in sharing of data by the issuers / trustees to Wint Wealth. You are advised to verify the information in this document basis the above from your demat linked bank account."],
+    [],
+    ["CONSOLIDATED SELL REPORT WINT WEALTH"],
+    ["Name", "Anil Vesvikar"],
+    ["Phone Number", "9833074106"],
+    ["Email", "anilvdlh@gmail.com"],
+    [],
+    ["Date of report generation:", "11/11/2026"],
+    ["Disclaimer: The document and details set out thereunder are for informational purposes only being prepared and shared for customer convenience. The data is based on transactions undertaken through Wint Wealth Platform only. There may be certain inaccuracies in the data presented in the document due to (i) transactions or dealings done by the client outside of Wint Wealth; or (ii) any other error in sharing of data by the issuers / trustees to Wint Wealth. You are advised to verify the information in this document basis the above from your demat linked bank account."]
   ];
   const ws2 = XLSX.utils.aoa_to_sheet(repayData);
   XLSX.utils.book_append_sheet(wb, ws2, "Repayment Summary");
 
-  // Sheet 3: Taxation Details
-  const taxData = [
-    ["", "", "", "", "", "TAXATION SCHEDULE & TDS STATEMENT"],
-    ["Name", "Vedant Gopalakrishnan"],
-    ["PAN Number", "ABCDE1234F"],
-    ["Financial Year", "2025-26"],
-    ["Payout Date", "Asset Description", "Gross Interest (INR)", "TDS Deducted (10%)", "Net Credited (INR)", "Bank Account"],
-    ["15/04/2025", "Muthoot Fincorp Senior NCD", 2465.75, 246.58, 2219.17, "HDFC Bank ****4102"],
-    ["20/05/2025", "InCred Financial Services", 1275.34, 127.53, 1147.81, "HDFC Bank ****4102"],
-    ["15/06/2025", "Spandana Sphoorty Financial", 2082.19, 208.22, 1873.97, "HDFC Bank ****4102"],
-    ["Total Annual", "", 5823.28, 582.33, 5240.95, ""],
-    ["Date of report generation:", "10/11/2026"],
-    ["Disclaimer: Tax information is for reference and convenience only. Please consult a qualified chartered accountant to validate before filing your income tax return."]
+  // Sheet 3: Upcoming Cashflow
+  const cashflowData = [
+    ["Wint Wealth"],
+    ["Name", "Anil Vesvikar"],
+    ["Phone Number", "9833074106"],
+    ["Email", "anilvdlh@gmail.com"],
+    [],
+    ["Upcoming Cashflow Statement"],
+    ["Name Of Bond", "ISIN", "Date", "Amount in Bank", "Principal Repaid", "Interest Paid (After TDS deduction)", "Interest Paid (Before TDS deduction)", "TDS", "Sell Value", "Transactiontype"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-12-2026", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-01-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-02-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-03-2027", "₹6,514.13", "", "₹6,514.13", "₹7,237.92", "₹723.79", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-04-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-05-2027", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-06-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-07-2027", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-08-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-09-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-10-2027", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-11-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "10-12-2027", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", "", "INTEREST"],
+    ["Muthoot MCred", "INE101Q07BU7", "13-01-2028", "₹10,27,909.49", "₹10,20,000.00", "₹7,909.49", "₹8,788.32", "₹878.83", "", "PRINCIPAL AND INTEREST"],
+    [],
+    ["Financial Year Summary (Upcoming Cashflow)"],
+    ["Financial Year", "Amount in Bank", "Principal", "Interest (After TDS Deduction)", "Interest (Before TDS Deduction)", "TDS", "Sell Value"],
+    ["2026-2027", "₹27,917.30", "", "₹27,917.30", "₹31,019.22", "₹3,101.92", ""],
+    ["2027-2028", "₹10,91,886.74", "₹10,20,000.00", "₹71,886.74", "₹79,874.16", "₹7,987.42", ""],
+    [],
+    ["Monthly Summary (Upcoming Cashflow)"],
+    ["Month", "Amount in Bank", "Principal", "Interest (After TDS Deduction)", "Interest (Before TDS Deduction)", "TDS Deducted", "Sell Value"],
+    ["December-2026", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", ""],
+    ["January-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", ""],
+    ["February-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", ""],
+    ["March-2027", "₹6,514.13", "", "₹6,514.13", "₹7,237.92", "₹723.79", ""],
+    ["April-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", ""],
+    ["May-2027", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", ""],
+    ["June-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", ""],
+    ["July-2027", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", ""],
+    ["August-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", ""],
+    ["September-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", ""],
+    ["October-2027", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", ""],
+    ["November-2027", "₹7,211.81", "", "₹7,211.81", "₹8,013.12", "₹801.31", ""],
+    ["December-2027", "₹6,979.55", "", "₹6,979.55", "₹7,755.06", "₹775.51", ""],
+    ["January-2028", "₹10,27,909.49", "₹10,20,000.00", "₹7,909.49", "₹8,788.32", "₹878.83", ""]
   ];
-  const ws3 = XLSX.utils.aoa_to_sheet(taxData);
-  XLSX.utils.book_append_sheet(wb, ws3, "Taxation Schedule");
+  const ws3 = XLSX.utils.aoa_to_sheet(cashflowData);
+  XLSX.utils.book_append_sheet(wb, ws3, "Upcoming Cashflow");
+
+  // Sheet 4: Bonds Holding Statement
+  const holdingData = [
+    ["Wint Wealth"],
+    ["Name", "Anil Vesvikar"],
+    ["Phone Number", "9833074106"],
+    ["Email", "anilvdlh@gmail.com"],
+    [],
+    ["Bonds Holding Statement"],
+    ["Name Of Bond", "ISIN", "Maturity Date", "Units", "YTM", "Current Value", "Upcoming Sell Value", "Upcoming interest", "Upcoming Principal", "Total Invested", "Total Sold", "Principal Repaid till Date", "Interest Paid (Before TDS Deduction) till Date", "Interest Paid (After TDS Deduction) till Date", "TDS Deducted till Date", "Principal Repayment Type", "Interest Repayment Type"],
+    ["Muthoot MCred", "INE101Q07BU7", "13-01-2028", 102, 11.0, "₹10,06,442.27", "", "₹1,10,893.38", "₹10,20,000.00", "₹10,00,727.38", "", "", "₹55,318.37", "₹49,785.89", "₹5,532.48", "At Maturity", "Monthly"],
+    ["Total", "", "", "", 11.0, "₹10,06,442.27", "", "₹1,10,893.38", "₹10,20,000.00", "₹10,00,727.38", "", "", "₹55,318.37", "₹49,785.89", "₹5,532.48", "", ""],
+    [],
+    ["Date of report generation:", "11/11/2026"],
+    ["Disclaimer:"],
+    ["The information provided in this Consolidated Tax Statement is for your reference and convenience only. It is not intended to serve as tax advice, and Wint Wealth is not a tax advisor. Please review the following disclaimers carefully:"],
+    ["Before filing your Income Tax Return (ITR), we strongly recommend reconciling this statement with form 26 AS and your demat linked bank account as we cannot guarantee 100% accuracy."],
+    ["We have classified and accounted for income, interest, principal repayments, and capital gains based on standard tax treatment for listed and taxable bonds in India."],
+    ["All information provided herein is in relation to transactions made on the Wint Wealth platform alone and does not make reference to other trades made in one's demat account."],
+    ["Tax laws and interpretations may vary based on your individual circumstances, and the actual tax liability may differ from the estimates provided here."],
+    ["Please consult a qualified tax advisor or chartered accountant to validate the same."],
+    ["Wint Wealth disclaims any liability arising from tax misfilings, discrepancies, or interpretations based on this statement."]
+  ];
+  const ws4 = XLSX.utils.aoa_to_sheet(holdingData);
+  XLSX.utils.book_append_sheet(wb, ws4, "Holding Statement");
 
   const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
   return new Uint8Array(buf);
